@@ -1,6 +1,6 @@
 {
   "name": "off-work-timer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "下班打卡毛玻璃计时器",
   "author": "demo",
   "main": "main.js",
@@ -18,7 +18,7 @@
   },
   "build": {
     "appId": "com.demo.offworktimer",
-    "productName": "下班计时器",
+    "productName": "下班计时器-v1.0",
     "directories": {
       "buildResources": "build",
       "output": "release"
@@ -39,7 +39,7 @@
         }
       ],
       "icon": "build/icon.ico",
-      "artifactName": "下班计时器-Setup-${version}.${ext}"
+      "artifactName": "下班计时器-v1.0-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -47,7 +47,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "下班计时器",
+      "shortcutName": "下班计时器-v1.0",
       "deleteAppDataOnUninstall": false
     },
     "publish": [
