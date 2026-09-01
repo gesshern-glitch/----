@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>下班计时器</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-card" id="app-card">
+    <!-- 标题栏（可拖动） -->
+    <div class="title-bar">
+      <div class="title">下班计时器</div>
+      <div class="win-btns">
+        <button class="win-btn" id="btn-min" title="最小化">&#8722;</button>
+        <button class="win-btn close" id="btn-close" title="关闭">&#10005;</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- 到点闪烁提示条 -->
+      <div class="flash-banner hidden" id="flash-banner">
+        <span>到点啦！可以下班了</span>
+        <button class="btn small" id="btn-stop-flash">停止闪烁</button>
+      </div>
+
+      <!-- 输入视图：未打卡时显示 -->
+      <div id="view-input">
+        <div class="section-title">请输入今天的上班时间</div>
+        <div class="time-input-row">
+          <input type="number" id="input-hour" class="time-input" min="0" max="23" placeholder="时" />
+          <span class="colon">:</span>
+          <input type="number" id="input-minute" class="time-input" min="0" max="59" placeholder="分" />
+        </div>
+        <div class="hint" id="input-hint">推荐下班时间 = 上班时间 + 9小时15分钟（7.75小时工时 + 1.5小时午休）</div>
+        <div class="hint preview hidden" id="off-preview"></div>
+        <button class="btn primary" id="btn-start">开始计时</button>
+      </div>
+
+      <!-- 计时视图：已有当日记录时显示 -->
+      <div id="view-timer" class="hidden">
+        <div class="countdown-block">
+          <div class="cd-label" id="cd-label">距离推荐下班时间</div>
+          <div class="cd-value" id="cd-value">--:--:--</div>
+        </div>
+
+        <div class="info-grid" id="timer-running-block">
+          <div class="info-item"><span class="label">上班时间</span><span class="value" id="t-start">--</span></div>
+          <div class="info-item"><span class="label">推荐下班时间</span><span class="value" id="t-off">--</span></div>
+          <div class="info-item"><span class="label">当前实际工时</span><span class="value" id="t-work">--</span></div>
+          <div class="info-item"><span class="label">当前加班时长</span><span class="value" id="t-overtime">--</span></div>
+          <div class="info-item wide subsidy-row">
+            <span class="label">补贴状态</span><span class="value subsidy" id="t-subsidy">暂无补贴</span>
+            <!-- 悬停补贴栏时显示的档位说明 -->
+            <div class="subsidy-tip hidden" id="subsidy-tip"></div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn primary" id="btn-clockout">下班打卡</button>
+          <button class="btn ghost" id="btn-reset">重新输入</button>
+        </div>
+      </div>
+
+      <!-- 当月统计 -->
+      <div class="section-title">本月统计 <span class="month-tag" id="stats-month"></span></div>
+      <div class="stats-grid">
+        <div class="stat-item clickable" id="stat-attend"><span class="label">出勤天数（点击查看日历）</span><span class="value" id="s-attend">--</span></div>
+        <div class="stat-item"><span class="label">当月出勤率</span><span class="value" id="s-rate">--</span></div>
+        <div class="stat-item"><span class="label">累计补贴</span><span class="value" id="s-subsidy">--</span></div>
+        <div class="stat-item"><span class="label">日均加班</span><span class="value" id="s-avg-ot">--</span></div>
+      </div>
+
+      <!-- 当月记录列表 -->
+      <div class="section-title">本月记录 <span class="month-tag" id="records-month"></span></div>
+      <div class="record-list" id="record-list">
+        <div class="empty">暂无记录</div>
+      </div>
+    </div>
+
+    <!-- 当月出勤日历弹层 -->
+    <div class="calendar-overlay hidden" id="calendar-overlay">
+      <div class="calendar-panel">
+        <div class="cal-header">
+          <span id="cal-title">--</span>
+          <button class="cal-close" id="cal-close" title="关闭">&#10005;</button>
+        </div>
+        <div class="cal-weekdays">
+          <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+        </div>
+        <div class="cal-grid" id="cal-grid"></div>
+        <div class="cal-legend">
+          蓝=出勤 · 灰=未出勤 · 浅蓝=未来工作日默认全勤 · 深灰淡底=休息日不计出勤 · 深蓝边=今天 · 角标休/班=调休安排 · 半蓝半灰=半天出勤（蓝在上=上半天，蓝在下=下半天）<br />
+          鼠标悬停日期可选择：出勤 / 出勤上半天 / 出勤下半天 / 缺勤 / 清空（半天按 0.5 天计入出勤率，清空后恢复自动判定）
+        </div>
+      </div>
+      <!-- 日历悬浮选择菜单 -->
+      <div class="cal-menu hidden" id="cal-menu">
+        <button class="cal-menu-item" data-val="present">出勤</button>
+        <button class="cal-menu-item" data-val="present-am">出勤上半天</button>
+        <button class="cal-menu-item" data-val="present-pm">出勤下半天</button>
+        <button class="cal-menu-item" data-val="absent">缺勤</button>
+        <button class="cal-menu-item clear" data-val="clear">清空（恢复默认）</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
