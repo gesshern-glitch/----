@@ -151,8 +151,10 @@ function fmtMoney(amount) {
 }
 
 /* ================= 全局状态 ================= */
-let flashActive = false;    // 是否正在闪烁
-let flashDismissed = false; // 本次运行是否已手动停止闪烁
+let flashActive = false;        // 是否正在闪烁
+let lastDismissTime = 0;        // 上次手动停止闪烁的时间戳
+const FLASH_COOLDOWN = 2 * 60 * 1000; // 停止闪烁后 2 分钟冷却期
+let lastTriggerTarget = 0;      // 上次触发闪烁的目标时间戳（防止同一节点重复触发）
 
 // 将过往日期未结算的记录自动按当日 23:59 结算，并固化快照数据（无需手动打卡）
 function finalizePastRecords() {
@@ -348,7 +350,8 @@ function renderStats() {
       delBtn.addEventListener('click', () => {
         if (confirm(`确定删除 ${item.key} 的记录吗？`)) {
           delRecord(item.key);
-          flashDismissed = false;
+          lastDismissTime = 0;
+          lastTriggerTarget = 0;
           renderAll();
         }
       });
@@ -476,7 +479,7 @@ function scheduleCloseCalMenu() {
 
 /* ================= 闪烁控制 ================= */
 function startFlash() {
-  if (flashActive || flashDismissed) return;
+  if (flashActive) return;
   flashActive = true;
   document.body.classList.add('flashing');
   $('flash-banner').classList.remove('hidden');
@@ -571,9 +574,28 @@ function tick() {
     $('cd-value').textContent = '已获得补贴100元';
   }
 
-  // 到推荐下班时间后整页白色高亮闪烁（无声）
+  // 到推荐下班时间或补贴时间节点时整页白色高亮闪烁（无声）
   if (nowMs >= offMs) {
-    startFlash();
+    // 确定当前应触发闪烁的时间节点
+    let triggerMs = offMs;
+    let bannerText = '到点啦！可以下班了';
+    // 已过下班时间，检查是否到达补贴档位时间节点
+    for (let i = 0; i < TIER_WORK_MIN.length; i++) {
+      const tTarget = tierTargetMs(startMs, TIER_WORK_MIN[i]);
+      if (nowMs >= tTarget) {
+        triggerMs = tTarget;
+        bannerText = `已达到补贴 ${TIER_LABELS[i]} 档位（实际工时满 ${TIER_WORK_MIN[i] / 60} 小时）`;
+      }
+    }
+    // 仅在到达新的时间节点时触发（避免同一节点重复触发）
+    if (triggerMs !== lastTriggerTarget) {
+      // 冷却期内不重复闪烁
+      if (Date.now() - lastDismissTime > FLASH_COOLDOWN || lastDismissTime === 0) {
+        $('flash-banner').querySelector('span').textContent = bannerText;
+        lastTriggerTarget = triggerMs;
+        startFlash();
+      }
+    }
   }
 
   $('t-work').textContent = fmtDuration(day.workMin);
@@ -618,7 +640,8 @@ function bindEvents() {
       return;
     }
     setRecord(dateKey(new Date()), { start: `${pad(h)}:${pad(m)}`, end: null });
-    flashDismissed = false;
+    lastDismissTime = 0;
+    lastTriggerTarget = 0;
     renderAll();
   });
 
@@ -650,13 +673,14 @@ function bindEvents() {
     }
     if (!confirm('确定清除今天的上班时间并重新输入吗？')) return;
     delRecord(today);
-    flashDismissed = false;
+    lastDismissTime = 0;
+    lastTriggerTarget = 0;
     renderAll();
   });
 
-  // 停止闪烁
+  // 停止闪烁（记录停止时间，2 分钟后到达新补贴节点会重新触发）
   $('btn-stop-flash').addEventListener('click', () => {
-    flashDismissed = true;
+    lastDismissTime = Date.now();
     stopFlash();
   });
 
