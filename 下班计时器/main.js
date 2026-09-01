@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Notification } = require('electron');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
@@ -40,12 +40,36 @@ app.whenReady().then(() => {
   app.setAppUserModelId('com.demo.offworktimer');
 
   // 自动更新：仅安装后的打包版启用（开发态跳过）。
-  // 检查到新版后后台静默下载，下载完成弹系统通知，用户重启即安装。
   if (app.isPackaged) {
     autoUpdater.autoDownload = true;
-    autoUpdater.checkForUpdatesAndNotify().catch(() => {
-      /* 无网络或无新版时静默忽略 */
+    autoUpdater.logger = console;
+
+    autoUpdater.on('error', (err) => {
+      console.error('[AutoUpdater] error:', err.message);
     });
+    autoUpdater.on('update-available', (info) => {
+      console.log('[AutoUpdater] update available:', info.version);
+      new Notification({ title: '下班计时器', body: `发现新版本 v${info.version}，正在下载...` }).show();
+    });
+    autoUpdater.on('update-not-available', () => {
+      console.log('[AutoUpdater] already up to date');
+    });
+    autoUpdater.on('download-progress', (p) => {
+      console.log(`[AutoUpdater] download ${Math.round(p.percent)}%`);
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      console.log('[AutoUpdater] update downloaded:', info.version);
+      new Notification({ title: '下班计时器', body: `新版本 v${info.version} 已就绪，点击重启更新`, click: true })
+        .on('click', () => autoUpdater.quitAndInstall())
+        .show();
+    });
+
+    // 启动时检查一次
+    autoUpdater.checkForUpdates().catch((e) => console.error('[AutoUpdater] check failed:', e.message));
+    // 之后每 30 分钟检查一次
+    setInterval(() => {
+      autoUpdater.checkForUpdates().catch(() => {});
+    }, 30 * 60 * 1000);
   }
 
   createWindow();
