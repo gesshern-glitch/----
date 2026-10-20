@@ -96,6 +96,34 @@ body {
   margin: 14px 0 8px;
 }
 
+/* 带右侧小按钮的分区标题（出勤记录行） */
+.section-title.has-btns {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.data-btns {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+/* 小工具按钮（数据文件 / 导出CSV） */
+.btn.tiny {
+  width: auto;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 7px;
+  background: rgba(47, 124, 246, 0.12);
+  color: #1657a8;
+  opacity: 1;
+}
+
+.btn.tiny:hover { background: rgba(47, 124, 246, 0.25); }
+
 /* 统计区当前月份标签 */
 .month-tag {
   color: #1657a8;
@@ -304,12 +332,41 @@ body.flashing .app-card {
 .cal-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
   font-weight: 800;
   font-size: 15px;
   margin-bottom: 8px;
   color: #1657a8;
 }
+
+.cal-center {
+  flex: 1;
+  text-align: center;
+  min-width: 0;
+}
+
+.cal-hint {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.cal-nav {
+  border: none;
+  background: rgba(47, 124, 246, 0.12);
+  color: #2f7cf6;
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+
+.cal-nav:hover { background: rgba(47, 124, 246, 0.25); }
+.cal-nav:disabled { opacity: 0.35; cursor: default; }
+.cal-nav:disabled:hover { background: rgba(47, 124, 246, 0.12); }
 
 .cal-close {
   border: none;
@@ -360,6 +417,12 @@ body.flashing .app-card {
 .cal-cell.blank { background: none; cursor: default; }
 .cal-cell.blank:hover { filter: none; }
 
+/* 没填的日子：中性空白（不涂灰判缺勤，可点进去补录） */
+.cal-cell.no-rec {
+  background: rgba(255, 255, 255, 0.45);
+  color: rgba(28, 39, 51, 0.45);
+}
+
 /* 休息日（周末/法定假日）：淡灰不显眼 */
 .cal-cell.rest {
   background: rgba(28, 39, 51, 0.06);
@@ -372,43 +435,20 @@ body.flashing .app-card {
   color: #fff;
 }
 
-/* 未出勤（工作日无记录）：中性灰 */
-.cal-cell.absent {
-  background: rgba(28, 39, 51, 0.28);
-  color: #fff;
+/* 日历补录的记录：蓝底加一圈深色内边，与软件当场打卡区分 */
+.cal-cell.manual-src {
+  box-shadow: inset 0 0 0 2px rgba(22, 87, 168, 0.95);
 }
 
-/* 未来工作日：浅蓝默认全勤 */
+/* 已填上班但还没打下班：白虚线内圈 */
+.cal-cell.pending {
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.85);
+}
+
+/* 还没到的工作日：浅蓝待填 */
 .cal-cell.future {
   background: rgba(47, 124, 246, 0.15);
   color: #1657a8;
-}
-
-/* 手动标记：实心 + 深色内圈，区分自动状态 */
-.cal-cell.present-manual {
-  background: #1657a8;
-  color: #fff;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.75);
-}
-
-/* 手动标记上半天：上半蓝、下半灰 */
-.cal-cell.am-manual {
-  background: linear-gradient(180deg, #1657a8 0%, #1657a8 50%, rgba(28, 39, 51, 0.10) 50%, rgba(28, 39, 51, 0.10) 100%);
-  color: #fff;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.75);
-}
-
-/* 手动标记下半天：下半蓝、上半灰 */
-.cal-cell.pm-manual {
-  background: linear-gradient(0deg, #1657a8 0%, #1657a8 50%, rgba(28, 39, 51, 0.10) 50%, rgba(28, 39, 51, 0.10) 100%);
-  color: #fff;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.75);
-}
-
-.cal-cell.absent-manual {
-  background: rgba(28, 39, 51, 0.55);
-  color: #fff;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.75);
 }
 
 .cal-cell.today {
@@ -432,11 +472,8 @@ body.flashing .app-card {
 }
 
 .cal-cell.present .cal-badge,
-.cal-cell.present-manual .cal-badge,
-.cal-cell.am-manual .cal-badge,
-.cal-cell.pm-manual .cal-badge,
-.cal-cell.absent .cal-badge,
-.cal-cell.absent-manual .cal-badge {
+.cal-cell.manual-src .cal-badge,
+.cal-cell.pending .cal-badge {
   color: rgba(255, 255, 255, 0.85);
 }
 
@@ -449,50 +486,97 @@ body.flashing .app-card {
   color: #1c2733;
 }
 
-/* ===== 日历悬浮选择菜单 ===== */
-.cal-menu {
+/* ===== 日历浮层（详情态 / 补录态 / 不可填提示） ===== */
+.cal-pop {
   position: absolute;
   z-index: 30;
+  width: 190px;
   background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(47, 124, 246, 0.25);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 4px 16px rgba(28, 39, 51, 0.18);
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 96px;
-}
-
-.cal-menu-item {
-  border: none;
-  background: transparent;
-  padding: 6px 10px;
-  font-size: 12px;
-  text-align: left;
-  border-radius: 7px;
-  cursor: pointer;
+  padding: 8px 10px 10px;
   color: #1c2733;
-  white-space: nowrap;
 }
 
-.cal-menu-item:hover { background: rgba(47, 124, 246, 0.12); }
-
-.cal-menu-item.active {
-  background: #2f7cf6;
-  color: #fff;
-}
-
-.cal-menu-item.clear {
+.cal-pop-title {
+  font-size: 12px;
+  font-weight: 800;
   color: #1657a8;
-  border-top: 1px solid rgba(47, 124, 246, 0.2);
-  border-radius: 0 0 7px 7px;
-  margin-top: 2px;
+  margin-bottom: 6px;
+  text-align: center;
 }
 
-.cal-menu-item.clear:hover { background: rgba(47, 124, 246, 0.12); }
+.cp-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  padding: 2px 0;
+  border-bottom: 1px dashed rgba(47, 124, 246, 0.15);
+}
+
+.cp-row:last-of-type { border-bottom: none; }
+.cp-row span { opacity: 0.65; }
+.cp-row b { font-weight: 800; }
+.cp-row b.sub { color: #e02020; }
+
+.cp-note {
+  font-size: 10px;
+  opacity: 0.6;
+  text-align: center;
+  margin: 4px 0 6px;
+}
+
+.cp-hint {
+  font-size: 10px;
+  opacity: 0.7;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+.cp-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.cp-field label {
+  font-size: 11px;
+  width: 30px;
+  opacity: 0.7;
+}
+
+.cp-field .colon { font-size: 14px; font-weight: 700; }
+
+.cp-err {
+  font-size: 10px;
+  color: #e02020;
+  font-weight: 700;
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.cal-pop-locked {
+  font-size: 11px;
+  text-align: center;
+  opacity: 0.7;
+  line-height: 1.6;
+}
+
+/* 浮层里整行铺开的按钮 */
+.btn.block { width: 100%; }
+
+/* 紧凑的时间输入框（日历补录用） */
+.time-input.tiny {
+  width: 42px;
+  height: 28px;
+  font-size: 14px;
+  border-radius: 8px;
+}
 
 /* ===== 补贴悬浮说明窗 ===== */
 .subsidy-tip {

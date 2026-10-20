@@ -50,38 +50,97 @@ function dateKey(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function storageKey(key) {
-  return 'workday-' + key;
-}
+/* ===== 数据层：内存 DB 为唯一数据源，每次改动落盘到 文档/下班计时器/出勤记录.json ===== */
+const DB = { records: {} };
+let saveTimer = null;
 
 function getRecord(key) {
-  try {
-    const raw = localStorage.getItem(storageKey(key));
-    return raw ? JSON.parse(raw) : null;
-  } catch (e) {
-    return null;
-  }
+  return DB.records[key] || null;
 }
 
 function setRecord(key, rec) {
-  localStorage.setItem(storageKey(key), JSON.stringify(rec));
+  DB.records[key] = rec;
+  scheduleSave();
 }
 
 function delRecord(key) {
-  localStorage.removeItem(storageKey(key));
+  delete DB.records[key];
+  scheduleSave();
 }
 
-// 日历手动设置的出勤覆盖：{ 'YYYY-MM-DD': 'present' | 'absent' }
-function getOverrides() {
+function jsonText() {
+  return JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    records: DB.records
+  }, null, 2);
+}
+
+// 同步生成一份 CSV，方便用 Excel 直接打开查看
+function csvText() {
+  const lines = ['日期,上班时间,下班时间,工时(小时),加班(小时),补贴(元),记录来源'];
+  Object.keys(DB.records).sort().forEach((key) => {
+    const rec = DB.records[key];
+    if (!rec || !rec.start) return;
+    const day = getRecordDay(key, rec);
+    lines.push([
+      key, rec.start, rec.end || '未打卡',
+      (day.workMin / 60).toFixed(2), (day.overtimeMin / 60).toFixed(2),
+      day.subsidy, rec.source === 'manual' ? '日历补录' : '软件打卡'
+    ].join(','));
+  });
+  return lines.join('\r\n');
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushSave, 300);
+}
+
+function flushSave() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
   try {
-    return JSON.parse(localStorage.getItem('attendance-overrides') || '{}');
+    window.store.save(jsonText(), csvText());
   } catch (e) {
-    return {};
+    console.error('flushSave failed', e);
   }
 }
 
-function setOverrides(map) {
-  localStorage.setItem('attendance-overrides', JSON.stringify(map));
+// 旧版本把记录存在软件内部存储里，首次使用（数据文件还不存在）时迁移到数据文件
+// （旧的手动标记上/下半天/缺勤已废弃，不再迁移）
+function migrateLegacyRecords() {
+  const out = {};
+  let count = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const sk = localStorage.key(i);
+    if (!sk || !sk.startsWith('workday-')) continue;
+    try {
+      const parsed = JSON.parse(localStorage.getItem(sk));
+      if (parsed && parsed.start) {
+        out[sk.slice('workday-'.length)] = parsed;
+        count++;
+      }
+    } catch (e) { /* 跳过损坏的旧记录 */ }
+  }
+  return { records: out, count };
+}
+
+async function loadData() {
+  let data = null;
+  try {
+    data = await window.store.load();
+  } catch (e) {
+    console.error('loadData failed', e);
+  }
+  DB.records = (data && data.records) ? data.records : {};
+  if (Object.keys(DB.records).length === 0) {
+    const legacy = migrateLegacyRecords();
+    if (legacy.count > 0) {
+      DB.records = legacy.records;
+      flushSave();   // 迁移结果立即写文件，不只留在内存
+    }
+  }
 }
 
 function parseHm(str) {
@@ -156,43 +215,41 @@ let lastDismissTime = 0;        // 上次手动停止闪烁的时间戳
 const FLASH_COOLDOWN = 2 * 60 * 1000; // 停止闪烁后 2 分钟冷却期
 let lastTriggerTarget = 0;      // 上次触发闪烁的目标时间戳（防止同一节点重复触发）
 
-// 将过往日期未结算的记录自动按当日 23:59 结算，并固化快照数据（无需手动打卡）
-function finalizePastRecords() {
-  const nowDate = new Date();
-  const today = dateKey(nowDate);
-  const curMonthPrefix = `${nowDate.getFullYear()}-${pad(nowDate.getMonth() + 1)}-`;
-  for (let i = localStorage.length - 1; i >= 0; i--) {
-    const storageKeyStr = localStorage.key(i);
-    if (!storageKeyStr || !storageKeyStr.startsWith('workday-')) continue;
-    const key = storageKeyStr.slice('workday-'.length);
-    // 只处理当月记录；非当月（含改系统时间测试产生的残留）直接清理，不计入任何统计
-    if (!key.startsWith(curMonthPrefix)) {
-      localStorage.removeItem(storageKeyStr);
-      continue;
-    }
-    if (key < today) {
-      const rec = getRecord(key);
-      if (rec && !rec.end) {
-        rec.end = '23:59';
-        const day = calcDay(startMsOf(key, rec), endMsOf(key, rec));
-        rec.workMin = Math.round(day.workMin * 100) / 100;
-        rec.overtimeMin = Math.round(day.overtimeMin * 100) / 100;
-        rec.subsidy = day.subsidy;
-        setRecord(key, rec);
-      }
-    }
-  }
+// 日历/记录列表当前浏览的年月（月度翻页用，默认当前月）
+let viewY = new Date().getFullYear();
+let viewM = new Date().getMonth();
 
-  // 同步清理非当月的出勤手动标记，保证出勤天数只反映当月
-  const overrides = getOverrides();
+// 是否正在浏览当前月
+function isCurMonth() {
+  const n = new Date();
+  return viewY === n.getFullYear() && viewM === n.getMonth();
+}
+
+// 当前月的标识（用于检测跨月）
+function curMonthKey() {
+  const n = new Date();
+  return `${n.getFullYear()}-${n.getMonth()}`;
+}
+
+let lastCurMonthKey = curMonthKey();
+
+// 将过往日期未结算的记录自动按当日 23:59 结算，并固化快照数据（无需手动打卡）
+// 历史月份记录永久保留，供日历月度翻页回看
+function finalizePastRecords() {
+  const today = dateKey(new Date());
   let changed = false;
-  Object.keys(overrides).forEach((key) => {
-    if (!key.startsWith(curMonthPrefix)) {
-      delete overrides[key];
+  Object.keys(DB.records).forEach((key) => {
+    const rec = DB.records[key];
+    if (key < today && rec && !rec.end && rec.start) {
+      rec.end = '23:59';
+      const day = calcDay(startMsOf(key, rec), endMsOf(key, rec));
+      rec.workMin = Math.round(day.workMin * 100) / 100;
+      rec.overtimeMin = Math.round(day.overtimeMin * 100) / 100;
+      rec.subsidy = day.subsidy;
       changed = true;
     }
   });
-  if (changed) setOverrides(overrides);
+  if (changed) scheduleSave();
 }
 
 /* ================= 视图渲染 ================= */
@@ -250,6 +307,13 @@ function getRecordDay(key, rec) {
   return calcDay(startMs, endMs);
 }
 
+function updateMonthLabels() {
+  // 统计固定显示当前月；记录列表跟随日历翻页的浏览月份
+  const n = new Date();
+  $('stats-month').textContent = `（${n.getFullYear()}年${n.getMonth() + 1}月）`;
+  $('records-month').textContent = `（${viewY}年${viewM + 1}月）`;
+}
+
 function renderStats() {
   const now = new Date();
   const y = now.getFullYear();
@@ -257,72 +321,73 @@ function renderStats() {
   const daysInMonth = new Date(y, mo + 1, 0).getDate();
   const today = now.getDate();
 
-  // 显示当前统计月份，避免与其他月份数据混淆
-  const monthLabel = `（${y}年${mo + 1}月）`;
-  $('stats-month').textContent = monthLabel;
-  $('records-month').textContent = monthLabel;
+  // 跨月累计：补贴与日均加班看全部历史月份（记录永久保留）
+  let allDays = 0;
+  let allOvertimeMin = 0;
+  let allSubsidy = 0;
+  Object.keys(DB.records).forEach((key) => {
+    const rec = DB.records[key];
+    if (!rec || !rec.start) return;
+    const day = getRecordDay(key, rec);
+    allDays++;
+    allOvertimeMin += day.overtimeMin;
+    allSubsidy += day.subsidy;
+  });
 
-  let attended = 0;
-  let decidedDays = 0;
-  let workDays = 0;
-  let recDays = 0;
-  let overtimeSum = 0;
-  let subsidySum = 0;
-  const records = [];
-  const overrides = getOverrides();
+  // 两个口径（共用“有记录即出勤”的定义）：
+  // 「出勤天数」显示 = 已勤天数 / 本月按日历应勤总天数（含调休补班，不含节假日与周末，未来几天也计进去）
+  // 「出勤率」计算 = 已过完工作日中有记录的天数 / 已过完的工作日天数（今天不计，避免刚打开软件就被扣分）
+  // 没打开软件也没补录的日子：日历上显示空白，但仍计入分母，因此自然拉低出勤率
+  let attended = 0;            // 已勤天数（含休息日加班）
+  let monthShouldDays = 0;     // 本月按日历应出勤总天数
+  let pastWorkdays = 0;        // 已过完的工作日天数
+  let pastAttended = 0;        // 其中真正有打卡记录的天数
+  let restOvertime = 0;        // 休息日还来上班的天数（只多算出勤，不进出勤率）
 
   for (let d = 1; d <= daysInMonth; d++) {
     const key = `${y}-${pad(mo + 1)}-${pad(d)}`;
     const rec = getRecord(key);
-
-    // 双保险：仅统计当月记录（日期键必须以当年当月开头）
-    if (rec && key.startsWith(`${y}-${pad(mo + 1)}-`)) {
-      recDays++;
-      const day = getRecordDay(key, rec);
-      records.push({ key, d, rec, day });
-      overtimeSum += day.overtimeMin;
-      // 累计补贴：过往已结算天 + 当天实时补贴都计入
-      subsidySum += day.subsidy;
-    }
-
-    // 出勤统计新口径：
-    // 出勤天数只统计已发生且实际出勤的天（当天输入后才计入），
-    // 还没到的日期不计入、不提前扣；哪天实际缺勤就从哪天开始扣除。
-    // 出勤率 = 已出勤天数 / 已过且已定的工作日天数。
-    const ov = overrides[key];
-    const workday = isWorkday(key);
-    if (workday) {
-      workDays++;
-      // “已定”：今天之前的日期，或今天已有记录/手动标记
-      const decided = d < today || (d === today && (rec || ov !== undefined));
-      if (decided) {
-        decidedDays++;
-        if (ov === 'present') attended += 1;
-        else if (ov === 'present-am' || ov === 'present-pm') attended += 0.5;
-        else if (ov !== 'absent' && rec) attended += 1;
+    if (isWorkday(key)) {
+      monthShouldDays++;
+      if (rec) attended++;
+      if (d < today) {
+        pastWorkdays++;
+        if (rec) pastAttended++;
       }
-    } else if (ov === 'present' || ov === 'present-am' || ov === 'present-pm') {
-      // 休息日手动标记出勤（如调休补班未配置时）；半天按 0.5 天计
-      workDays++;
-      if (d <= today) {
-        decidedDays++;
-        attended += ov === 'present' ? 1 : 0.5;
-      }
+    } else if (rec) {
+      // 休息日补录（如周末加班）：算一天出勤，应勤天数与出勤率都不变
+      restOvertime++;
+      attended++;
     }
   }
 
-  const rate = decidedDays > 0 ? (attended / decidedDays) * 100 : 100;
+  const rate = pastWorkdays > 0 ? (pastAttended / pastWorkdays) * 100 : 100;
   const rateEl = $('s-rate');
   rateEl.textContent = rate.toFixed(1) + '%';
   rateEl.classList.toggle('rate-red', rate > 90);
   rateEl.classList.toggle('rate-blue', rate <= 90);
 
-  $('s-attend').textContent = `${attended} / ${workDays} 天`;
-  $('s-subsidy').textContent = subsidySum > 0 ? `¥${subsidySum}` : '¥0';
+  $('s-attend').textContent = `${attended} / ${monthShouldDays} 天`;
+  $('s-attend').title = restOvertime > 0
+    ? `本月按日历应出勤 ${monthShouldDays} 天，其中休息日还来上班 ${restOvertime} 天（不计入出勤率）`
+    : '';
+  $('s-subsidy').textContent = allSubsidy > 0 ? `¥${allSubsidy}` : '¥0';
   $('s-avg-ot').textContent =
-    attended > 0 && overtimeSum > 0 ? fmtDuration(overtimeSum / attended) : '0小时00分';
+    allDays > 0 && allOvertimeMin > 0 ? fmtDuration(allOvertimeMin / allDays) : '0小时00分';
+}
 
-  // 记录列表（倒序）
+// 记录列表：跟随日历翻页的浏览月份（viewY/viewM），倒序展示
+function renderRecordList() {
+  const daysInMonth = new Date(viewY, viewM + 1, 0).getDate();
+  const records = [];
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${viewY}-${pad(viewM + 1)}-${pad(d)}`;
+    const rec = getRecord(key);
+    if (rec) {
+      records.push({ key, d, rec, day: getRecordDay(key, rec) });
+    }
+  }
+
   const listEl = $('record-list');
   listEl.innerHTML = '';
   if (records.length === 0) {
@@ -334,7 +399,7 @@ function renderStats() {
 
       const dateSpan = document.createElement('span');
       dateSpan.className = 'rec-date';
-      dateSpan.textContent = `${pad(mo + 1)}-${pad(item.d)}`;
+      dateSpan.textContent = `${pad(viewM + 1)}-${pad(item.d)}`;
 
       const infoSpan = document.createElement('span');
       infoSpan.className = 'rec-info';
@@ -352,7 +417,8 @@ function renderStats() {
           delRecord(item.key);
           lastDismissTime = 0;
           lastTriggerTarget = 0;
-          renderAll();
+          if (calPopKey === item.key) refreshAfterChange();
+          else renderAll();
         }
       });
 
@@ -368,18 +434,24 @@ function renderStats() {
 function renderAll() {
   renderViews();
   renderStats();
+  renderCalendar();
+  renderRecordList();
+  updateMonthLabels();
 }
 
 /* ================= 出勤日历 ================= */
 function renderCalendar() {
   const now = new Date();
-  const y = now.getFullYear();
-  const mo = now.getMonth();
+  const y = viewY;
+  const mo = viewM;
+  const curMonth = isCurMonth();
   const daysInMonth = new Date(y, mo + 1, 0).getDate();
   const firstWeekday = (new Date(y, mo, 1).getDay() + 6) % 7; // 周一=0
-  const overrides = getOverrides();
 
   $('cal-title').textContent = `${y}年${mo + 1}月 出勤日历`;
+  $('cal-month-hint').textContent = curMonth ? '' : '（历史月份 · 可补录）';
+  // 已是当前月时禁止往后翻
+  $('cal-next').disabled = curMonth;
   const grid = $('cal-grid');
   grid.innerHTML = '';
 
@@ -392,11 +464,11 @@ function renderCalendar() {
   for (let d = 1; d <= daysInMonth; d++) {
     const key = `${y}-${pad(mo + 1)}-${pad(d)}`;
     const rec = getRecord(key);
-    const ov = overrides[key];
     const workday = isWorkday(key);
 
     const cell = document.createElement('div');
     cell.className = 'cal-cell';
+    cell.dataset.key = key;
     const numSpan = document.createElement('span');
     numSpan.textContent = d;
     cell.appendChild(numSpan);
@@ -416,65 +488,204 @@ function renderCalendar() {
 
     if (!workday) cell.classList.add('rest');
 
-    if (ov === 'present') cell.classList.add('present-manual');
-    else if (ov === 'present-am') cell.classList.add('am-manual');
-    else if (ov === 'present-pm') cell.classList.add('pm-manual');
-    else if (ov === 'absent') cell.classList.add('absent-manual');
-    else if (rec) cell.classList.add('present');
-    else if (workday && d >= now.getDate()) cell.classList.add('future');
-    else if (workday) cell.classList.add('absent');
+    if (rec) {
+      cell.classList.add('present');
+      // 补录的记录加一圈深色内边，与当天在软件里打卡区分
+      if (rec.source === 'manual') cell.classList.add('manual-src');
+      if (!rec.end) cell.classList.add('pending');
+    } else if (curMonth && workday && d >= now.getDate()) {
+      cell.classList.add('future');       // 还没到的工作日：不用填
+    } else {
+      cell.classList.add('no-rec');       // 没填的日子：空白，不涂灰判缺勤
+    }
 
-    if (d === now.getDate()) cell.classList.add('today');
+    if (curMonth && d === now.getDate()) cell.classList.add('today');
 
-    // 鼠标悬停弹出选择菜单：出勤 / 出勤上半天 / 出勤下半天 / 缺勤
-    cell.addEventListener('mouseenter', () => openCalMenu(key, cell));
-    cell.addEventListener('mouseleave', scheduleCloseCalMenu);
+    // 点击日期弹出浮层：已有记录看详情，过去的空白日可补录
+    cell.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (calPopKey === key && !$('cal-pop').classList.contains('hidden')) {
+        closeCalPop();
+        return;
+      }
+      openCalPop(key, cell);
+    });
 
     grid.appendChild(cell);
   }
 }
 
 function openCalendar() {
+  // 每次打开回到当前月
+  const n = new Date();
+  viewY = n.getFullYear();
+  viewM = n.getMonth();
   renderCalendar();
+  renderRecordList();
+  updateMonthLabels();
   $('calendar-overlay').classList.remove('hidden');
 }
 
 function closeCalendar() {
   $('calendar-overlay').classList.add('hidden');
-  $('cal-menu').classList.add('hidden');
+  closeCalPop();
 }
 
-/* ================= 日历悬浮选择菜单 ================= */
-let calMenuKey = null;
-let calMenuTimer = null;
+// 月度翻页：向左任意翻，向右不超过当前月
+function gotoPrevMonth() {
+  closeCalPop();
+  viewM--;
+  if (viewM < 0) { viewM = 11; viewY--; }
+  renderCalendar();
+  renderRecordList();
+  updateMonthLabels();
+}
 
-function openCalMenu(key, cell) {
-  clearTimeout(calMenuTimer);
-  calMenuKey = key;
-  const menu = $('cal-menu');
-  const cur = getOverrides()[key] || '';
-  menu.querySelectorAll('.cal-menu-item').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.val === cur);
-  });
-  menu.classList.remove('hidden');
+function gotoNextMonth() {
+  const n = new Date();
+  const ty = viewM === 11 ? viewY + 1 : viewY;
+  const tm = viewM === 11 ? 0 : viewM + 1;
+  if (ty > n.getFullYear() || (ty === n.getFullYear() && tm > n.getMonth())) return;
+  closeCalPop();
+  viewY = ty;
+  viewM = tm;
+  renderCalendar();
+  renderRecordList();
+  updateMonthLabels();
+}
+
+/* ================= 日历浮层：已填日期看详情，过去的空白日可补录 ================= */
+let calPopKey = null;
+
+function fmtKeyCn(key) {
+  const [y, mo, d] = key.split('-').map(Number);
+  return `${y}年${mo}月${d}日`;
+}
+
+function openCalPop(key, cell) {
+  calPopKey = key;
+  renderCalPop();
+  $('cal-pop').classList.remove('hidden');
+  positionCalPop(key);
+}
+
+function positionCalPop(key) {
+  const pop = $('cal-pop');
+  const cell = $('cal-grid').querySelector(`.cal-cell[data-key="${key}"]`);
+  if (!cell) return;
   const oRect = $('calendar-overlay').getBoundingClientRect();
   const cRect = cell.getBoundingClientRect();
-  let left = cRect.left - oRect.left + cRect.width / 2 - menu.offsetWidth / 2;
-  left = Math.max(8, Math.min(left, oRect.width - menu.offsetWidth - 8));
-  let top = cRect.bottom - oRect.top + 4;
-  if (top + menu.offsetHeight > oRect.height - 8) {
-    top = cRect.top - oRect.top - menu.offsetHeight - 4;
-  }
-  menu.style.left = `${left}px`;
-  menu.style.top = `${Math.max(4, top)}px`;
+  let left = cRect.left - oRect.left + cRect.width / 2 - pop.offsetWidth / 2;
+  left = Math.max(8, Math.min(left, oRect.width - pop.offsetWidth - 8));
+  let top = cRect.top - oRect.top - pop.offsetHeight - 4;
+  if (top < 4) top = cRect.bottom - oRect.top + 4;
+  pop.style.left = `${left}px`;
+  pop.style.top = `${Math.max(4, Math.min(top, oRect.height - pop.offsetHeight - 8))}px`;
 }
 
-function scheduleCloseCalMenu() {
-  clearTimeout(calMenuTimer);
-  calMenuTimer = setTimeout(() => {
-    $('cal-menu').classList.add('hidden');
-    calMenuKey = null;
-  }, 160);
+// 根据该日状态切换浮层形态：详情态 / 录入态 / 不可填提示
+function renderCalPop() {
+  const key = calPopKey;
+  if (!key) return;
+  const rec = getRecord(key);
+  const todayKey = dateKey(new Date());
+  const canInput = !rec && key < todayKey;
+
+  $('cal-pop-title').textContent = fmtKeyCn(key) + (rec ? '' : canInput ? ' · 补录出勤' : '');
+  $('cal-pop-detail').classList.toggle('hidden', !rec);
+  $('cal-pop-form').classList.toggle('hidden', !canInput);
+  $('cal-pop-locked').classList.toggle('hidden', !!rec || canInput);
+
+  if (rec) {
+    const day = getRecordDay(key, rec);
+    $('cp-start').textContent = rec.start || '--';
+    $('cp-end').textContent = rec.end || '未打卡（下班时间还在累加）';
+    $('cp-work').textContent = fmtDuration(day.workMin);
+    $('cp-ot').textContent = fmtDuration(day.overtimeMin);
+    $('cp-sub').textContent = day.subsidy > 0 ? `¥${day.subsidy}` : '暂无补贴';
+    $('cp-source').textContent = rec.source === 'manual'
+      ? '这条是在日历里补录的'
+      : (!rec.auto && rec.end === '23:59' ? '这条由软件自动按 23:59 结算' : '这条是在软件里打卡生成的');
+  } else if (canInput) {
+    ['cp-in-sh', 'cp-in-sm', 'cp-in-eh', 'cp-in-em'].forEach((id) => { $(id).value = ''; });
+    showPopError('');
+  }
+}
+
+function closeCalPop() {
+  $('cal-pop').classList.add('hidden');
+  calPopKey = null;
+}
+
+function showPopError(msg) {
+  const err = $('cp-err');
+  err.textContent = msg;
+  err.classList.toggle('hidden', !msg);
+}
+
+// 改完记录后刷新日历/统计/列表，并让浮层跟着变形态
+function refreshAfterChange() {
+  const keepKey = calPopKey;
+  renderCalendar();
+  renderStats();
+  renderRecordList();
+  updateMonthLabels();
+  if (keepKey) {
+    calPopKey = keepKey;
+    renderCalPop();
+    positionCalPop(keepKey);
+  }
+}
+
+function readPopHm(hId, mId, label) {
+  const h = parseInt($(hId).value, 10);
+  const m = parseInt($(mId).value, 10);
+  if (!Number.isInteger(h) || h < 0 || h > 23) return { err: `请填入正确的${label}时间（时：0 - 23）` };
+  if (!Number.isInteger(m) || m < 0 || m > 59) return { err: `请填入正确的${label}时间（分：0 - 59）` };
+  return { h, m };
+}
+
+// 补录：填入上下班时间，工时/加班/补贴按与主界面相同的算法自动算出
+function saveManualRecord() {
+  const key = calPopKey;
+  if (!key) return;
+  const s = readPopHm('cp-in-sh', 'cp-in-sm', '上班');
+  if (s.err) { showPopError(s.err); return; }
+  const e = readPopHm('cp-in-eh', 'cp-in-em', '下班');
+  if (e.err) { showPopError(e.err); return; }
+
+  const [y, mo, d] = key.split('-').map(Number);
+  const startMs = new Date(y, mo - 1, d, s.h, s.m).getTime();
+  const endMs = new Date(y, mo - 1, d, e.h, e.m).getTime();
+  if (endMs <= startMs) {
+    showPopError('下班时间要晚于上班时间（暂不支持跨零点夜班）');
+    return;
+  }
+  const day = calcDay(startMs, endMs);
+  setRecord(key, {
+    start: `${pad(s.h)}:${pad(s.m)}`,
+    end: `${pad(e.h)}:${pad(e.m)}`,
+    workMin: Math.round(day.workMin * 100) / 100,
+    overtimeMin: Math.round(day.overtimeMin * 100) / 100,
+    subsidy: day.subsidy,
+    source: 'manual'
+  });
+  showPopError('');
+  refreshAfterChange();
+}
+
+// 清空当日记录：浮层会立即切回录入态，可以直接重新填时间
+function clearDayRecord() {
+  const key = calPopKey;
+  if (!key) return;
+  if (!confirm(`确定清空 ${fmtKeyCn(key)} 的出勤记录吗？清空后这天变为空白，可以重新填上下班时间。`)) return;
+  delRecord(key);
+  if (key === dateKey(new Date())) {
+    lastDismissTime = 0;
+    lastTriggerTarget = 0;
+    renderViews();
+  }
+  refreshAfterChange();
 }
 
 /* ================= 闪烁控制 ================= */
@@ -687,27 +898,33 @@ function bindEvents() {
   // 出勤日历
   $('stat-attend').addEventListener('click', openCalendar);
   $('cal-close').addEventListener('click', closeCalendar);
+  $('cal-prev').addEventListener('click', gotoPrevMonth);
+  $('cal-next').addEventListener('click', gotoNextMonth);
   $('calendar-overlay').addEventListener('click', (e) => {
+    // 点浮层以外的任意位置先收起浮层；点到空白遮罩层再关闭整个日历
+    if (!$('cal-pop').classList.contains('hidden')) {
+      closeCalPop();
+      return;
+    }
     if (e.target === $('calendar-overlay')) closeCalendar();
   });
 
-  // 日历悬浮选择菜单：选项点击写入手动标记，半天按 0.5 天计入出勤率
-  const calMenu = $('cal-menu');
-  calMenu.addEventListener('mouseenter', () => clearTimeout(calMenuTimer));
-  calMenu.addEventListener('mouseleave', scheduleCloseCalMenu);
-  calMenu.querySelectorAll('.cal-menu-item').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      if (!calMenuKey) return;
-      const map = getOverrides();
-      const val = btn.dataset.val;
-      if (val === 'clear') delete map[calMenuKey];
-      else map[calMenuKey] = val;
-      setOverrides(map);
-      calMenu.classList.add('hidden');
-      calMenuKey = null;
-      renderCalendar();
-      renderStats();
-    });
+  // 日历浮层：补录保存 / 清空，浮层内部点击不冒泡到遮罩（避免误关闭）
+  const calPop = $('cal-pop');
+  calPop.addEventListener('click', (e) => e.stopPropagation());
+  $('cal-pop-save').addEventListener('click', saveManualRecord);
+  $('cal-pop-clear').addEventListener('click', clearDayRecord);
+  ['cp-in-sh', 'cp-in-sm', 'cp-in-eh', 'cp-in-em'].forEach((id) => {
+    $(id).addEventListener('input', () => showPopError(''));
+  });
+
+  // 数据文件入口
+  $('btn-open-data').addEventListener('click', () => window.store.openFolder());
+  $('btn-export-csv').addEventListener('click', async () => {
+    flushSave();
+    let p = '';
+    try { p = await window.store.dataPath(); } catch (e) { /* ignore */ }
+    alert(`已保存。你的出勤数据在这个文件里：\n${p}\n\n同目录下还有一份同名的「出勤记录.csv」，可以用 Excel 直接打开。`);
   });
 
   // 补贴栏悬停显示各档位达成时刻说明（仅计时视图存在时有效）
@@ -725,13 +942,34 @@ function bindEvents() {
 }
 
 /* ================= 启动 ================= */
-finalizePastRecords();
-bindEvents();
-renderAll();
-tick();
-setInterval(tick, 1000);
-// 每分钟刷新一次统计（跨天自动结算、当天补贴实时计入）
-setInterval(() => {
+(async function boot() {
+  await loadData();          // 从 文档/下班计时器/出勤记录.json 读数据（首次会迁移旧记录）
   finalizePastRecords();
-  renderStats();
-}, 60000);
+  bindEvents();
+  renderAll();
+  tick();
+  setInterval(tick, 1000);
+  // 每分钟刷新一次统计（跨天自动结算、当天补贴实时计入）
+  setInterval(() => {
+    finalizePastRecords();
+    // 跨月时自动回到新的当月，避免停在已结束的月份上
+    if (curMonthKey() !== lastCurMonthKey) {
+      lastCurMonthKey = curMonthKey();
+      const n = new Date();
+      viewY = n.getFullYear();
+      viewM = n.getMonth();
+      renderCalendar();
+      renderRecordList();
+      if (calPopKey) closeCalPop();
+    }
+    renderStats();
+    updateMonthLabels();
+  }, 60000);
+
+  // 窗口关闭前把防抖中的最后一笔改动同步写入文件
+  window.addEventListener('beforeunload', () => {
+    try {
+      window.store.saveSync(jsonText(), csvText());
+    } catch (e) { /* ignore */ }
+  });
+})();

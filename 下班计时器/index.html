@@ -11,8 +11,8 @@
     <div class="title-bar">
       <div class="title">下班计时器</div>
       <div class="win-btns">
-        <button class="win-btn" id="btn-min" title="最小化">&#8722;</button>
-        <button class="win-btn close" id="btn-close" title="关闭">&#10005;</button>
+        <button class="win-btn" id="btn-min" title="最小化（收起到托盘）">&#8722;</button>
+        <button class="win-btn close" id="btn-close" title="关闭（收起到托盘，双击托盘图标重新打开）">&#10005;</button>
       </div>
     </div>
 
@@ -31,7 +31,7 @@
           <span class="colon">:</span>
           <input type="number" id="input-minute" class="time-input" min="0" max="59" placeholder="分" />
         </div>
-        <div class="hint" id="input-hint">推荐下班时间 = 上班时间 + 9小时15分钟（7.75小时工时 + 1.5小时午休）</div>
+        <div class="hint" id="input-hint">推荐下班时间 = 上班时间 + 9小时15分钟（7.75小时工时 + 1.5小时午休）；忘打卡的日子，可在出勤日历里点那天补填</div>
         <div class="hint preview hidden" id="off-preview"></div>
         <button class="btn primary" id="btn-start">开始计时</button>
       </div>
@@ -64,24 +64,31 @@
       <!-- 当月统计 -->
       <div class="section-title">本月统计 <span class="month-tag" id="stats-month"></span></div>
       <div class="stats-grid">
-        <div class="stat-item clickable" id="stat-attend"><span class="label">出勤天数（点击查看日历）</span><span class="value" id="s-attend">--</span></div>
-        <div class="stat-item"><span class="label">当月出勤率</span><span class="value" id="s-rate">--</span></div>
-        <div class="stat-item"><span class="label">累计补贴</span><span class="value" id="s-subsidy">--</span></div>
-        <div class="stat-item"><span class="label">日均加班</span><span class="value" id="s-avg-ot">--</span></div>
+        <div class="stat-item clickable" id="stat-attend"><span class="label">出勤天数（已勤 / 本月按日历应勤）</span><span class="value" id="s-attend">--</span></div>
+        <div class="stat-item"><span class="label">当月出勤率（按已过完的工作日）</span><span class="value" id="s-rate">--</span></div>
+        <div class="stat-item"><span class="label">累计补贴（全部月份）</span><span class="value" id="s-subsidy">--</span></div>
+        <div class="stat-item"><span class="label">日均加班（全部月份）</span><span class="value" id="s-avg-ot">--</span></div>
       </div>
 
-      <!-- 当月记录列表 -->
-      <div class="section-title">本月记录 <span class="month-tag" id="records-month"></span></div>
+      <!-- 出勤记录列表（跟随日历翻页的浏览月份） -->
+      <div class="section-title has-btns">出勤记录 <span class="month-tag" id="records-month"></span>
+        <span class="data-btns">
+          <button class="btn tiny" id="btn-open-data" title="打开 文档/下班计时器 文件夹">数据文件</button>
+          <button class="btn tiny" id="btn-export-csv" title="立即保存一份 json 与 csv">导出CSV</button>
+        </span>
+      </div>
       <div class="record-list" id="record-list">
         <div class="empty">暂无记录</div>
       </div>
     </div>
 
-    <!-- 当月出勤日历弹层 -->
+    <!-- 出勤日历弹层（支持月度翻页回看历史） -->
     <div class="calendar-overlay hidden" id="calendar-overlay">
       <div class="calendar-panel">
         <div class="cal-header">
-          <span id="cal-title">--</span>
+          <button class="cal-nav" id="cal-prev" title="上一月">&#8249;</button>
+          <div class="cal-center"><span id="cal-title">--</span><span class="cal-hint" id="cal-month-hint"></span></div>
+          <button class="cal-nav" id="cal-next" title="下一月">&#8250;</button>
           <button class="cal-close" id="cal-close" title="关闭">&#10005;</button>
         </div>
         <div class="cal-weekdays">
@@ -89,17 +96,43 @@
         </div>
         <div class="cal-grid" id="cal-grid"></div>
         <div class="cal-legend">
-          蓝=出勤 · 灰=未出勤 · 浅蓝=未来工作日默认全勤 · 深灰淡底=休息日不计出勤 · 深蓝边=今天 · 角标休/班=调休安排 · 半蓝半灰=半天出勤（蓝在上=上半天，蓝在下=下半天）<br />
-          鼠标悬停日期可选择：出勤 / 出勤上半天 / 出勤下半天 / 缺勤 / 清空（半天按 0.5 天计入出勤率，清空后恢复自动判定）
+          蓝=已填出勤 · 空白=没填（不计出勤，可点进去补录）· 浅蓝=还没到的工作日 · 淡灰底=休息日 · 深蓝边=今天 · 蓝底深内圈=日历补录的记录 · 角标休/班=调休安排<br />
+          点击已过去的日期：没填过的可写入上班/下班时间自动算工时与补贴；已填过的则看时长与补贴，可清空后重新填写
         </div>
       </div>
-      <!-- 日历悬浮选择菜单 -->
-      <div class="cal-menu hidden" id="cal-menu">
-        <button class="cal-menu-item" data-val="present">出勤</button>
-        <button class="cal-menu-item" data-val="present-am">出勤上半天</button>
-        <button class="cal-menu-item" data-val="present-pm">出勤下半天</button>
-        <button class="cal-menu-item" data-val="absent">缺勤</button>
-        <button class="cal-menu-item clear" data-val="clear">清空（恢复默认）</button>
+      <!-- 日历浮层：详情态（已填）/ 录入态（未填的过去日）/ 提示态（今天与未来） -->
+      <div class="cal-pop hidden" id="cal-pop">
+        <div class="cal-pop-title" id="cal-pop-title">--</div>
+
+        <div class="cal-pop-detail hidden" id="cal-pop-detail">
+          <div class="cp-row"><span>上班时间</span><b id="cp-start">--</b></div>
+          <div class="cp-row"><span>下班时间</span><b id="cp-end">--</b></div>
+          <div class="cp-row"><span>实际工时</span><b id="cp-work">--</b></div>
+          <div class="cp-row"><span>加班时长</span><b id="cp-ot">--</b></div>
+          <div class="cp-row"><span>当日补贴</span><b id="cp-sub" class="sub">--</b></div>
+          <div class="cp-note" id="cp-source"></div>
+          <button class="btn small ghost block" id="cal-pop-clear">清空这天记录</button>
+        </div>
+
+        <div class="cal-pop-form hidden" id="cal-pop-form">
+          <div class="cp-hint">这天没打开软件？填上下班时间就能补上出勤记录</div>
+          <div class="cp-field">
+            <label>上班</label>
+            <input type="number" class="time-input tiny" id="cp-in-sh" min="0" max="23" placeholder="时" />
+            <span class="colon">:</span>
+            <input type="number" class="time-input tiny" id="cp-in-sm" min="0" max="59" placeholder="分" />
+          </div>
+          <div class="cp-field">
+            <label>下班</label>
+            <input type="number" class="time-input tiny" id="cp-in-eh" min="0" max="23" placeholder="时" />
+            <span class="colon">:</span>
+            <input type="number" class="time-input tiny" id="cp-in-em" min="0" max="59" placeholder="分" />
+          </div>
+          <div class="cp-err hidden" id="cp-err"></div>
+          <button class="btn primary small block" id="cal-pop-save">保存这天</button>
+        </div>
+
+        <div class="cal-pop-locked hidden" id="cal-pop-locked">今天请在上方正常打卡，未来的日子还不用填</div>
       </div>
     </div>
   </div>
