@@ -101,6 +101,9 @@ function checkForUpdates(manual) {
     return;
   }
   manualCheck = !!manual;
+  if (manual && tray) {
+    try { tray.displayBalloon({ title: '检查更新', content: '正在看看有没有新版本…' }); } catch (_) { /* ignore */ }
+  }
   autoUpdaterRef.checkForUpdates().catch((e) => log(`[AutoUpdater] check failed: ${e.message}`));
 }
 
@@ -280,6 +283,8 @@ app.whenReady().then(() => {
         autoUpdater.autoDownload = false;   // 先问过用户，不要背地里吃掉几十兆流量
         autoUpdater.logger = { info: log, warn: log, error: log };
 
+        autoUpdater.on('checking-for-update', () => log('[AutoUpdater] checking…'));
+
         autoUpdater.on('error', (err) => {
           log(`[AutoUpdater] error: ${err.message}`);
           if (manualCheck) {
@@ -344,7 +349,8 @@ app.whenReady().then(() => {
             cancelId: 1,
             noLink: true
           }).then((result) => {
-            if (result.response === 0) autoUpdater.quitAndInstall();
+            // isSilent=true：不弹安装向导；forceRunAfter：装完自动重新拉起软件
+            if (result.response === 0) autoUpdater.quitAndInstall(true, true);
           });
         });
 

@@ -7,7 +7,9 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win",
-    "release": "electron-builder --win --publish always"
+    "release": "electron-builder --win --publish always",
+    "verify": "node scripts/verify-release.js",
+    "verify:local": "node scripts/verify-release.js --local"
   },
   "dependencies": {
     "electron-updater": "^6.3.9"
